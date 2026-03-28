@@ -14,7 +14,7 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
 def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
     """
     Validates the JWT token in the request header and returns the current logged-in User object.
-    If the token is invalid or expired, it throws a 401 Unauthorized error.
+    Matches the consolidated JSONB User model (no separate profile table).
     """
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -23,7 +23,7 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     )
     
     try:
-        # Decode the token
+        # 1. Decode the token to get the user identity (email)
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         email: str = payload.get("sub")
         if email is None:
@@ -31,8 +31,11 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     except JWTError:
         raise credentials_exception
         
-    # Fetch the user from the database
+    # 2. Fetch the user directly from the users table
     user = db.query(User).filter(User.email == email).first()
+    
+    # 3. Validation: We only check if the user exists. 
+    # We NO LONGER check for user.profile because that data is now in JSONB columns.
     if user is None:
         raise credentials_exception
         

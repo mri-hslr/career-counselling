@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8"><title>AI Career Compass</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .option-btn.correct { background: #059669 !important; color: white; }
+        .option-btn.wrong { background: #dc2626 !important; color: white; }
+        .diff-Easy { color: #34d399; } .diff-Medium { color: #fbbf24; } .diff-Hard { color: #f87171; }
+    </style>
+</head>
+<body class="bg-slate-950 text-slate-200 min-h-screen flex items-center justify-center p-4">
+    <div id="app-container" class="max-w-2xl w-full">
+        <div id="header-section" class="mb-8 flex justify-between items-end">
+            <div><p id="module-tag" class="text-[10px] font-black text-blue-500 uppercase">Module 3: Aptitude</p>
+            <h1 id="category-label" class="text-lg font-bold text-white uppercase">Initialising...</h1>
+            <p id="difficulty-tag" class="text-[10px] font-bold uppercase mt-1"></p></div>
+            <span id="progress-text" class="text-xs font-mono text-slate-500">0 / 15</span>
+        </div>
+        <div id="quiz-card" class="bg-slate-900 border border-slate-800 rounded-[2.5rem] p-8 md:p-12 shadow-2xl">
+            <div id="content-area"></div>
+            <div id="explanation-panel" class="hidden mt-8 pt-8 border-t border-slate-800">
+                <p id="explanation-text" class="text-sm text-slate-400 italic mb-6"></p>
+                <button onclick="handleNext()" class="w-full bg-blue-600 py-4 rounded-xl font-bold">Continue →</button>
+            </div>
+        </div>
+        <div id="status-screen" class="hidden text-center bg-slate-900 border border-slate-800 rounded-[2.5rem] p-12 shadow-2xl">
+            <h2 id="status-title" class="text-2xl font-bold text-white mb-2">Syncing Profile</h2>
+            <p id="status-desc" class="text-slate-500 text-sm"></p>
+        </div>
+    </div>
+    <script>
+        const USER_ID = "tanvi_dev_test"; 
+        const API_BASE = "http://127.0.0.1:8000/api/v1/assessments";
+        let masterPool, aptiResults = [], persResults = [], totalCount = 0, currentCatIdx = 0;
+        let categories = ["Logical Reasoning", "Quantitative Aptitude", "Verbal Ability"];
+        let catLevels = { "Logical Reasoning": "Medium", "Quantitative Aptitude": "Medium", "Verbal Ability": "Medium" };
+        const personalityQs = [{trait:"Discipline", text:"I follow a routine.", type:"positive"}, {trait:"Curiosity", text:"I enjoy research.", type:"positive"}];
+
+        async function start() {
+            const res = await fetch(`${API_BASE}/aptitude/generate/assessment-pool?target_grade=6-8`);
+            const data = await res.json(); masterPool = data.pool; renderApti();
+        }
+        function renderApti() {
+            const cat = categories[currentCatIdx], diff = catLevels[cat], q = masterPool[cat][diff].pop();
+            document.getElementById('category-label').innerText = q.category;
+            document.getElementById('difficulty-tag').innerText = q.difficulty;
+            document.getElementById('difficulty-tag').className = `text-[10px] font-bold uppercase diff-${q.difficulty}`;
+            document.getElementById('progress-text').innerText = `${totalCount + 1} / 15`;
+            let html = `<p class="text-xl mb-10">${q.question}</p><div class="grid gap-4">`;
+            q.options.forEach(o => html += `<button onclick="valApti('${o[0]}','${q.answer}','${q.explanation.replace(/'/g,"")}', '${q.category}')" class="option-btn p-5 text-left bg-slate-800 border border-slate-700 rounded-2xl transition-all">${o}</button>`);
+            document.getElementById('content-area').innerHTML = html + `</div>`;
+        }
+        function valApti(c, a, e, cat) {
+            const ok = (c === a); document.querySelectorAll('.option-btn').forEach(b => {
+                b.disabled = true; if(b.innerText.startsWith(a)) b.classList.add('correct');
+                else if(b.innerText.startsWith(c) && !ok) b.classList.add('wrong');
+            });
+            if(ok) catLevels[cat] = catLevels[cat] === "Easy" ? "Medium" : "Hard";
+            else catLevels[cat] = catLevels[cat] === "Hard" ? "Medium" : "Easy";
+            aptiResults.push({cat, ok}); document.getElementById('explanation-text').innerText = e;
+            document.getElementById('explanation-panel').classList.remove('hidden');
+        }
+        function handleNext() {
+            document.getElementById('explanation-panel').classList.add('hidden'); totalCount++;
+            if(totalCount < 15) { currentCatIdx = (currentCatIdx + 1) % 3; renderApti(); }
+            else { totalCount = 0; renderPers(); }
+        }
+        function renderPers() {
+            const q = personalityQs[totalCount]; document.getElementById('module-tag').innerText = "Module 4: Personality";
+            document.getElementById('category-label').innerText = q.trait; document.getElementById('progress-text').innerText = `${totalCount+1}/${personalityQs.length}`;
+            let html = `<p class="text-xl mb-12">${q.text}</p><div class="flex gap-2">`;
+            [1,2,3,4,5].forEach(n => html += `<button onclick="recPers(${n})" class="p-5 bg-slate-800 border border-slate-700 rounded-xl flex-1 font-bold">${n}</button>`);
+            document.getElementById('content-area').innerHTML = html + `</div>`;
+        }
+        function recPers(s) {
+            persResults.push({...personalityQs[totalCount], score: s}); totalCount++;
+            if(totalCount < personalityQs.length) renderPers(); else sync();
+        }
+        async function sync() {
+            document.getElementById('quiz-card').classList.add('hidden'); document.getElementById('status-screen').classList.remove('hidden');
+            const res = await fetch(`${API_BASE}/submit-final`, {
+                method: "POST", headers: {"Content-Type":"application/json"},
+                body: JSON.stringify({user_id: USER_ID, personality_data: {persResults}, aptitude_data: {aptiResults}})
+            });
+            const d = await res.json(); document.getElementById('status-desc').innerText = `Ref ID: ${d.record_id}`;
+        }
+        start();
+    </script>
+</body>
+</html>

@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Career Compass - Behavioral DNA</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .likert-btn.active { background-color: #3b82f6; border-color: #60a5fa; color: white; transform: scale(1.05); }
+        .fade-in { animation: fadeIn 0.4s ease-out; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+    </style>
+</head>
+<body class="bg-slate-950 text-slate-200 min-h-screen font-sans flex items-center justify-center p-4">
+
+    <div id="test-container" class="max-w-xl w-full">
+        <div class="mb-8 flex justify-between items-end">
+            <div>
+                <p id="category-label" class="text-[10px] font-black uppercase tracking-[0.2em] text-blue-500 mb-1">MODULE 4: PERSONALITY</p>
+                <h1 id="trait-label" class="text-lg font-bold text-white uppercase tracking-wider italic">Loading...</h1>
+            </div>
+            <div class="text-right">
+                <span id="progress-text" class="text-xs font-mono text-slate-500">1 / 15</span>
+                <div class="w-24 h-1 bg-slate-800 rounded-full mt-2 overflow-hidden">
+                    <div id="progress-bar" class="h-full bg-blue-600 transition-all duration-500" style="width: 6%"></div>
+                </div>
+            </div>
+        </div>
+
+        <div id="quiz-card" class="bg-slate-900 border border-slate-800 rounded-[2rem] p-8 md:p-12 shadow-2xl fade-in">
+            <p id="question-text" class="text-xl md:text-2xl font-medium leading-relaxed mb-12 text-slate-100">
+                Question will appear here...
+            </p>
+
+            <div class="space-y-4">
+                <div class="flex justify-between text-[10px] uppercase font-bold text-slate-500 px-2 mb-2">
+                    <span>Strongly Disagree</span>
+                    <span>Strongly Agree</span>
+                </div>
+                <div class="flex justify-between items-center gap-2">
+                    <button onclick="recordAnswer(1)" class="likert-btn w-full py-4 rounded-xl border border-slate-700 bg-slate-800/40 hover:bg-slate-800 transition-all text-sm">1</button>
+                    <button onclick="recordAnswer(2)" class="likert-btn w-full py-4 rounded-xl border border-slate-700 bg-slate-800/40 hover:bg-slate-800 transition-all text-sm">2</button>
+                    <button onclick="recordAnswer(3)" class="likert-btn w-full py-4 rounded-xl border border-slate-700 bg-slate-800/40 hover:bg-slate-800 transition-all text-sm">3</button>
+                    <button onclick="recordAnswer(4)" class="likert-btn w-full py-4 rounded-xl border border-slate-700 bg-slate-800/40 hover:bg-slate-800 transition-all text-sm">4</button>
+                    <button onclick="recordAnswer(5)" class="likert-btn w-full py-4 rounded-xl border border-slate-700 bg-slate-800/40 hover:bg-slate-800 transition-all text-sm">5</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="result-screen" class="hidden bg-slate-900 border border-slate-800 rounded-[2.5rem] p-10 shadow-2xl fade-in">
+            <h2 class="text-2xl font-bold text-white mb-2">Behavioral Profile</h2>
+            <p class="text-slate-500 text-xs mb-8 uppercase tracking-widest">Multi-Dimensional Analysis Complete</p>
+            
+            <div id="score-output" class="space-y-6 mb-10"></div>
+
+            <div class="bg-slate-950 p-6 rounded-2xl border border-slate-800">
+                <h3 class="text-[10px] font-black text-red-500 uppercase mb-3 tracking-widest">Consistency Audit</h3>
+                <ul id="inconsistency-log" class="text-xs text-slate-400 space-y-2 italic"></ul>
+            </div>
+            
+            <button onclick="location.reload()" class="w-full mt-8 bg-blue-600 hover:bg-blue-500 text-white py-4 rounded-xl font-bold text-sm transition-all shadow-lg shadow-blue-900/30">
+                Retake Assessment
+            </button>
+        </div>
+    </div>
+
+    <script>
+        const questions = [
+            // DISCIPLINE [cite: 53]
+            { id: "D1", trait: "Discipline", text: "I strictly follow a daily routine even when there is no exam pressure.", type: "positive" },
+            { id: "D2", trait: "Discipline", text: "I often leave my school assignments for the very last minute.", type: "negative" },
+            { id: "D3", trait: "Discipline", text: "When I start a difficult project, I make sure to finish it no matter what.", type: "positive" },
+
+            // CURIOSITY & CREATIVITY [cite: 52]
+            { id: "C1", trait: "Curiosity", text: "I often spend my free time researching topics that were briefly mentioned in class.", type: "positive" },
+            { id: "C2", trait: "Curiosity", text: "I find it boring to learn about subjects that don't directly help me get marks.", type: "negative" },
+            { id: "C3", trait: "Curiosity", text: "I enjoy coming up with multiple solutions to a single problem.", type: "positive" },
+
+            // SOCIAL CONFIDENCE [cite: 54]
+            { id: "S1", trait: "Social Confidence", text: "I feel energetic and comfortable when leading a group discussion.", type: "positive" },
+            { id: "S2", trait: "Social Confidence", text: "I prefer working alone rather than in a team where I have to speak up.", type: "negative" },
+            { id: "S3", trait: "Social Confidence", text: "I find it easy to start conversations with people I have just met.", type: "positive" },
+
+            // EMPATHY & TEAMWORK [cite: 55]
+            { id: "E1", trait: "Empathy", text: "I prioritize the team's harmony over individual success in projects.", type: "positive" },
+            { id: "E2", trait: "Empathy", text: "I struggle to understand why people get emotional over small failures.", type: "negative" },
+            { id: "E3", trait: "Empathy", text: "I naturally notice when a classmate is feeling left out and try to include them.", type: "positive" },
+
+            // STRESS HANDLING [cite: 56]
+            { id: "H1", trait: "Stress Handling", text: "I stay calm and clear-headed even when facing tight deadlines.", type: "positive" },
+            { id: "H2", trait: "Stress Handling", text: "I get anxious easily when too many tasks are assigned at once.", type: "negative" },
+            { id: "H3", trait: "Stress Handling", text: "Unexpected changes in my schedule rarely upset my focus.", type: "positive" }
+        ];
+
+        let currentIdx = 0;
+        let userResponses = [];
+
+        function renderQuestion() {
+            const q = questions[currentIdx];
+            document.getElementById('trait-label').innerText = q.trait;
+            document.getElementById('question-text').innerText = q.text;
+            document.getElementById('progress-text').innerText = `${currentIdx + 1} / ${questions.length}`;
+            document.getElementById('progress-bar').style.width = `${((currentIdx + 1) / questions.length) * 100}%`;
+        }
+
+        function recordAnswer(score) {
+            userResponses.push({ ...questions[currentIdx], userScore: score });
+            currentIdx++;
+            if (currentIdx < questions.length) {
+                renderQuestion();
+            } else {
+                showResults();
+            }
+        }
+
+        function showResults() {
+            document.getElementById('quiz-card').classList.add('hidden');
+            document.getElementById('result-screen').classList.remove('hidden');
+            document.getElementById('category-label').classList.add('hidden');
+
+            const traitScores = {};
+            const inconsistencies = [];
+
+            // Grouping and Processing Logic [cite: 91, 110]
+            userResponses.forEach(res => {
+                if (!traitScores[res.trait]) traitScores[res.trait] = { total: 0, count: 0, raw: {} };
+                
+                let actualVal = res.userScore;
+                if (res.type === "negative") actualVal = 6 - res.userScore; // Reverse coding
+
+                traitScores[res.trait].total += actualVal;
+                traitScores[res.trait].count += 1;
+                traitScores[res.trait].raw[res.id] = actualVal;
+            });
+
+            // Consistency Detection Logic [cite: 57]
+            const output = document.getElementById('score-output');
+            const log = document.getElementById('inconsistency-log');
+
+            for (let trait in traitScores) {
+                const avg = (traitScores[trait].total / traitScores[trait].count).toFixed(1);
+                
+                // Detection: Compare Positive (1) vs Negative Mirror (2)
+                const q1 = userResponses.find(r => r.trait === trait && r.id.includes('1')).userScore;
+                const q2 = userResponses.find(r => r.trait === trait && r.id.includes('2')).userScore;
+                
+                // If both are 4-5 or both are 1-2, it's a contradiction because one is negative
+                if (Math.abs(q1 - (6 - q2)) >= 3) {
+                    inconsistencies.push(`Conflict detected in <b>${trait}</b>: Claims high ability but reports opposing behavior.`);
+                }
+
+                output.innerHTML += `
+                    <div>
+                        <div class="flex justify-between text-[10px] font-black mb-2 uppercase tracking-widest text-slate-500">
+                            <span>${trait}</span>
+                            <span class="text-blue-400">${avg} / 5.0</span>
+                        </div>
+                        <div class="w-full h-2 bg-slate-800 rounded-full overflow-hidden">
+                            <div class="h-full bg-blue-500" style="width: ${(avg/5)*100}%"></div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            if (inconsistencies.length === 0) {
+                log.innerHTML = "<li>No significant behavioral contradictions found. Data is reliable.</li>";
+            } else {
+                inconsistencies.forEach(item => log.innerHTML += `<li>${item}</li>`);
+            }
+        }
+
+        renderQuestion();
+    </script>
+</body>
+</html>

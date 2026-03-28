@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Career Roadmap | Career Compass</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { background-color: #020617; font-family: 'Inter', sans-serif; }
+        .glass-card { background: rgba(15, 23, 42, 0.6); backdrop-filter: blur(16px); border: 1px solid rgba(51, 65, 85, 0.4); }
+        .loading-shimmer { background: linear-gradient(90deg, #1e293b 25%, #334155 50%, #1e293b 75%); background-size: 200% 100%; animation: shimmer 2s infinite; }
+        @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+    </style>
+</head>
+<body class="text-slate-200 min-h-screen p-6 lg:p-16">
+
+    <div class="max-w-6xl mx-auto">
+        <header class="mb-16 border-b border-slate-800 pb-10 flex justify-between items-end">
+            <div>
+                <h1 class="text-5xl font-black tracking-tighter text-white">FUTURE <span class="text-blue-500 underline decoration-blue-500/30">ROADMAP</span></h1>
+                <p id="ref-tag" class="text-xs font-mono text-slate-500 mt-4 tracking-[0.2em] uppercase">VERIFYING_IDENTITY...</p>
+            </div>
+            <div class="text-right hidden md:block">
+                <p class="text-[10px] font-bold text-slate-500 uppercase">Analysis Engine</p>
+                <p class="text-sm font-mono text-blue-400">DeepSeek-R1 Integrated</p>
+            </div>
+        </header>
+
+        <div id="loader" class="space-y-6">
+            <div class="h-32 w-full loading-shimmer rounded-3xl opacity-20"></div>
+            <div class="grid md:grid-cols-3 gap-6">
+                <div class="h-64 loading-shimmer rounded-3xl opacity-10"></div>
+                <div class="h-64 loading-shimmer rounded-3xl opacity-10"></div>
+                <div class="h-64 loading-shimmer rounded-3xl opacity-10"></div>
+            </div>
+            <p class="text-center text-blue-500 font-bold animate-pulse mt-8">DECONSTRUCTING PSYCHOMETRIC CLUSTERS...</p>
+        </div>
+
+        <div id="dashboard" class="hidden animate-in fade-in duration-700">
+            <div class="glass-card rounded-[2.5rem] p-10 mb-12 relative overflow-hidden">
+                <div class="absolute top-0 left-0 w-1 h-full bg-blue-500"></div>
+                <h2 class="text-xs font-black text-blue-500 uppercase tracking-widest mb-4">The Architect's Verdict</h2>
+                <p id="overall-status" class="text-xl md:text-2xl font-medium leading-relaxed text-slate-200"></p>
+            </div>
+
+            <div id="career-grid" class="grid md:grid-cols-3 gap-8">
+                </div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = "http://127.0.0.1:8000/api/v1/assessments";
+
+        async function init() {
+            const params = new URLSearchParams(window.location.search);
+            const refId = params.get('id') || "c4ad061";
+            document.getElementById('ref-tag').innerText = `PROFILE_ID: ${refId}`;
+
+            try {
+                const response = await fetch(`${API_BASE}/analyze-career/${refId}`);
+                if (!response.ok) throw new Error("Analysis Failed");
+                const data = await response.json();
+                render(data);
+            } catch (err) {
+                document.getElementById('loader').innerHTML = `<p class="text-red-500 font-mono text-center">SYSTEM_CRASH: ${err.message}</p>`;
+            }
+        }
+
+        function render(data) {
+            document.getElementById('loader').classList.add('hidden');
+            const dashboard = document.getElementById('dashboard');
+            dashboard.classList.remove('hidden');
+
+            document.getElementById('overall-status').innerText = data.overall_status;
+            
+            const grid = document.getElementById('career-grid');
+            data.careers.forEach(job => {
+                grid.innerHTML += `
+                    <div class="glass-card rounded-[2rem] p-8 flex flex-col hover:border-blue-500/40 transition-all duration-300 group">
+                        <div class="flex justify-between items-start mb-8">
+                            <h3 class="text-2xl font-bold text-white leading-tight group-hover:text-blue-400 transition-colors">${job.title}</h3>
+                            <div class="bg-blue-500/10 border border-blue-500/20 text-blue-400 text-[10px] font-black px-3 py-1 rounded-full">
+                                ${job.match_score}%
+                            </div>
+                        </div>
+
+                        <div class="space-y-6 flex-grow">
+                            <div>
+                                <h4 class="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2">The Alignment</h4>
+                                <p class="text-sm text-slate-400 leading-relaxed">${job.why_you}</p>
+                            </div>
+
+                            <div class="bg-red-500/5 border border-red-500/10 p-5 rounded-2xl">
+                                <h4 class="text-[10px] font-black text-red-500 uppercase tracking-widest mb-2">Technical Friction</h4>
+                                <p class="text-xs text-red-200/60 italic leading-relaxed">${job.brutal_truth}</p>
+                            </div>
+                        </div>
+
+                        <div class="mt-10 pt-6 border-t border-slate-800">
+                            <div class="flex flex-wrap gap-2">
+                                ${job.skills.map(s => `<span class="bg-slate-800/50 border border-slate-700 text-slate-400 text-[9px] font-bold px-2 py-1 rounded-md uppercase">${s}</span>`).join('')}
+                            </div>
+                        </div>
+                    </div>
+                `;
+            });
+        }
+
+        init();
+    </script>
+</body>
+</html>

@@ -7,7 +7,8 @@ class UserCreate(BaseModel):
     email: EmailStr
     password: str
     full_name: str
-    role: UserRole = UserRole.student
+    # Change .student to .STUDENT
+    role: UserRole = UserRole.STUDENT 
 
 class UserResponse(BaseModel):
     id: UUID

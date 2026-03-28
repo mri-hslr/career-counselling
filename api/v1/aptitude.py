@@ -1,181 +1,101 @@
 import os
-import logging
-from typing import List
+import random
+import re
+import psycopg2
+from psycopg2.extras import RealDictCursor
+from fastapi import APIRouter, HTTPException
 
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
-from sqlalchemy.orm import Session
+router = APIRouter(prefix="/api/v1/assessments", tags=["Career Engine"])
+DATABASE_URL = os.getenv("DATABASE_URL")
 
-# LangChain Imports
-from langchain_community.vectorstores import PGVector
-from langchain_openai import ChatOpenAI
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.output_parsers import PydanticOutputParser
-
-# Core & DB Imports
-from core.vector_db import get_vector_store
-from core.database import get_db
-from api.deps import get_current_user
-from models.users import User
-from models.assessments import Test, Result
-from schemas.assessments import AptitudeScoreSubmit, AptitudeScoreResponse
-
-# --- Setup Logging ---
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-logger = logging.getLogger(__name__)
-
-# Updated Prefix to match our API Documentation
-router = APIRouter(prefix="/api/v1/assessments/aptitude", tags=["Aptitude Assessments"])
-
-# --- Pydantic Models for Structured AI Output ---
-class AptitudeMCQ(BaseModel):
-    question: str = Field(description="The mathematical or logical aptitude question")
-    options: List[str] = Field(description="Exactly 4 distinct options for the MCQ")
-    correct_answer: str = Field(description="The exact text of the correct option")
-    explanation: str = Field(description="A step-by-step mathematical breakdown of how to solve the problem")
-
-class AptitudeQuizOutput(BaseModel):
-    quiz_summary: str = Field(description="A 1-2 sentence overview of the concepts covered in this quiz")
-    questions: List[AptitudeMCQ] = Field(description="A list of multiple choice questions")
-
-# --- Endpoints ---
-
-@router.post("/generate", response_model=AptitudeQuizOutput)
-async def generate_aptitude_quiz(
-    category: str, 
-    topic: str, 
-    target_grade: str, 
-    difficulty: str,   
-    num_questions: int = 5,
-    vs: PGVector = Depends(get_vector_store),
-    current_user: User = Depends(get_current_user) # <-- ADDED: Secures the endpoint!
-):
-    """ Retrieves context from Postgres and generates a structured, grade-appropriate aptitude quiz. """
-    logger.info(f"User {current_user.email} generating {num_questions} {difficulty} questions on {topic}")
-
-    # 1. Vector Search (RAG) - Strict Filtering
+# --- CLEAN UTILS ---
+def extract_qa(text: str):
+    """Parses raw document text into clean question, options, answer, and explanation."""
     try:
-        # Note: If your ingested PDF chunks don't have 'target_grade' and 'difficulty' in their metadata, 
-        # this filter might return empty. If it crashes, remove the filter and let the LLM handle difficulty.
-        retriever = vs.as_retriever(
-            search_kwargs={
-                "k": 15, 
-                "filter": {
-                    "category": category,
-                    "topic": topic,
-                    "target_grade": target_grade, 
-                    "difficulty": difficulty      
-                }
-            }
-        )
-
-        docs = retriever.invoke(f"Extract {difficulty} aptitude problems for grade {target_grade} regarding {topic}")
-        context_text = "\n\n".join([doc.page_content for doc in docs])
-
-        if not context_text:
-            logger.warning("No context found in PostgreSQL for the given filters.")
-            raise HTTPException(status_code=404, detail="No ingested data found matching this specific criteria.")
+        parts = text.split("A)")
+        raw_question = parts[0]
+        clean_q = re.sub(r"(?i)^(Question:|Q\d+[\.:])", "", raw_question).strip()
         
-    except Exception as e:
-        logger.error(f"Database retrieval failed: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Database retrieval failed.")
+        options_blob = "A)" + parts[1]
+        labels = ['A)', 'B)', 'C)', 'D)']
+        final_options = []
+        
+        for i, current_label in enumerate(labels):
+            if current_label in options_blob:
+                start_content = options_blob.split(current_label)[1]
+                terminators = labels[i+1:] + ["Correct Answer:", "Explanation:", "Q"]
+                option_content = start_content
+                for term in terminators:
+                    if term in option_content:
+                        option_content = option_content.split(term)[0]
+                        break
+                final_options.append(f"{current_label} {option_content.strip()}")
 
-    # 2. Initialize DeepSeek API
-    deepseek_api_key = os.getenv("DEEPSEEK_API_KEY")
-    if not deepseek_api_key:
-        raise HTTPException(status_code=500, detail="CRITICAL: DEEPSEEK_API_KEY is missing in .env file.")
-    
-    llm = ChatOpenAI(
-        model="deepseek-chat", 
-        api_key=deepseek_api_key, 
-        base_url="https://api.deepseek.com",
-        temperature=0.3 
-    )
+        ans_match = re.search(r"Correct Answer:\s*(?:Option\s*)?([A-D])", text, re.IGNORECASE)
+        correct_letter = ans_match.group(1).upper() if ans_match else "A"
+        
+        explanation = "N/A"
+        if "Explanation:" in text:
+            explanation = text.split("Explanation:")[1].split("Question:")[0].strip()
+            
+        return clean_q, final_options, correct_letter, explanation
+    except:
+        return "Parsing Error", ["A) N/A", "B) N/A", "C) N/A", "D) N/A"], "A", "N/A"
 
-    # 3. Setup the Pydantic Output Parser
-    parser = PydanticOutputParser(pydantic_object=AptitudeQuizOutput)
+# --- REWIRED ROUTE ---
 
-    # 4. Create the Prompt
-    system_prompt = """
-    You are an expert educational assessor. 
-    Your task is to generate a structured Aptitude Quiz based strictly on the provided context.
-    
-    CRITICAL CONSTRAINTS:
-    - Target Audience: Grade {target_grade} student. The language and mathematical complexity MUST be appropriate for this age group.
-    - Difficulty Level: {difficulty}. Ensure the problems match this specific difficulty level.
-    - Generate EXACTLY {num_questions} Multiple Choice Questions (MCQs).
-    - Provide a clear, step-by-step mathematical explanation for the correct answer tailored to a Grade {target_grade} reading level.
-    - Do not hallucinate formulas; use the logic presented in the context.
-    
-    {format_instructions}
-    
-    Context from Vector Database:
-    {context}
+@router.get("/aptitude/generate/assessment-pool")
+async def get_assessment_pool(target_grade: str):
     """
-
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", system_prompt),
-        ("human", "Generate a {difficulty} aptitude quiz for Grade {target_grade} on Category: {category}, Topic: {topic}.")
-    ])
-
-    # 5. Execute the Chain
-    logger.info("Sending prompt and context to DeepSeek API...")
-    chain = prompt | llm | parser
+    Fetches exactly 45 questions:
+    - 15 questions per category (Logical, Quant, Verbal)
+    - Within each: 5 Easy, 5 Medium, 5 Hard
+    """
+    categories = ["Logical Reasoning", "Quantitative Aptitude", "Verbal Ability"]
+    difficulties = ["Easy", "Medium", "Hard"]
+    
+    query = """
+    SELECT document, cmetadata->>'category' as cat, cmetadata->>'difficulty' as diff 
+    FROM langchain_pg_embedding 
+    WHERE cmetadata->>'target_grade' = %s
+    """
     
     try:
-        result = chain.invoke({
-            "context": context_text,
-            "category": category,
-            "topic": topic,
-            "target_grade": target_grade,
-            "difficulty": difficulty,
-            "num_questions": num_questions,
-            "format_instructions": parser.get_format_instructions()
-        })
-        return result
-    except Exception as e:
-        logger.error(f"LLM Generation failed: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail="LLM Generation failed.")
-    
-@router.post("/score", response_model=AptitudeScoreResponse)
-async def save_aptitude_score(
-    submission: AptitudeScoreSubmit,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
-):
-    """ Grades the RAG aptitude test and saves the score to the database. """
-    
-    if submission.total_questions == 0:
-        raise HTTPException(status_code=400, detail="Total questions cannot be zero.")
+        with psycopg2.connect(DATABASE_URL) as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(query, (target_grade,))
+                rows = cur.fetchall()
+
+        # Group fetched questions by Category and Difficulty
+        raw_pool = {cat: {diff: [] for diff in difficulties} for cat in categories}
         
-    percentage_score = int((submission.correct_answers / submission.total_questions) * 100)
+        for r in rows:
+            cat, diff = r.get('cat'), r.get('diff')
+            if cat in categories and diff in difficulties:
+                q_text, opts, ans, expl = extract_qa(r['document'])
+                raw_pool[cat][diff].append({
+                    "question": q_text,
+                    "options": opts,
+                    "answer": ans,
+                    "explanation": expl,
+                    "category": cat,
+                    "difficulty": diff
+                })
 
-    # Ensure the Test exists in the master Tests table
-    test_record = db.query(Test).filter(Test.title == "General Aptitude RAG Test").first()
-    if not test_record:
-        test_record = Test(
-            title="General Aptitude RAG Test",
-            type="aptitude",
-            total_questions=10
-        )
-        db.add(test_record)
-        db.commit()
-        db.refresh(test_record)
+        # Build the final balanced pool
+        final_balanced_pool = []
+        for cat in categories:
+            for diff in difficulties:
+                available = raw_pool[cat][diff]
+                # Sample exactly 5, or all if less than 5 available
+                sampled = random.sample(available, min(len(available), 5))
+                final_balanced_pool.extend(sampled)
 
-    # Save the student's result
-    new_result = Result(
-        user_id=current_user.id,
-        test_id=test_record.id,
-        overall_score=percentage_score,
-        weakness_mapping=submission.weaknesses
-    )
-    
-    db.add(new_result)
-    db.commit()
-    db.refresh(new_result)
+        return {
+            "total_count": len(final_balanced_pool),
+            "questions": final_balanced_pool
+        }
 
-    return AptitudeScoreResponse(
-        message="Aptitude score securely saved to database.",
-        overall_score_percentage=percentage_score,
-        result_id=str(new_result.id)
-    )
+    except Exception as e:
+        print(f"Pool Generation Error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to generate balanced question pool.")
