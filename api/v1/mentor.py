@@ -104,18 +104,50 @@ def create_mentor_profile(body: MentorProfileIn, current_user: User = Depends(ge
     if current_user.role != UserRole.MENTOR:
         raise HTTPException(status_code=403, detail="Mentor role required.")
     
-    vector = embed_model.encode(body.expertise).tolist()
-    mentor = Mentor(
-        user_id=current_user.id,
-        expertise=body.expertise,
-        expertise_vector=vector,
-        bio=body.bio,
-        years_experience=body.years_experience,
-        is_verified=True
-    )
-    db.add(mentor)
-    db.commit()
-    return {"message": "AI-indexed profile created."}
+    try:
+        vector = embed_model.encode(body.expertise).tolist()
+        mentor = db.query(Mentor).filter(Mentor.user_id == current_user.id).first()
+        
+        if mentor:
+            # Update existing profile
+            mentor.expertise = body.expertise
+            mentor.expertise_vector = vector
+            mentor.bio = body.bio
+            mentor.years_experience = body.years_experience
+            message = "AI-indexed profile updated."
+        else:
+            # Create new profile
+            mentor = Mentor(
+                user_id=current_user.id,
+                expertise=body.expertise,
+                expertise_vector=vector,
+                bio=body.bio,
+                years_experience=body.years_experience,
+                is_verified=True
+            )
+            db.add(mentor)
+            message = "AI-indexed profile created."
+        
+        db.commit()
+        return {"message": message}
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error creating/updating mentor profile: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error occurred during profile processing.")
+
+@router.get("/profiles/mentors/me", response_model=MentorResponse)
+def get_my_mentor_profile(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Fetches the mentor profile for the currently logged-in user."""
+    if current_user.role != UserRole.MENTOR:
+        raise HTTPException(status_code=403, detail="Access denied. Mentor role required.")
+        
+    mentor = db.query(Mentor).filter(Mentor.user_id == current_user.id).first()
+    
+    if not mentor:
+        # Returns 404 so the React frontend knows to show the "Create Profile" form
+        raise HTTPException(status_code=404, detail="Mentor profile not found.")
+        
+    return mentor
 
 @router.get("/mentorship/search/", response_model=List[MentorResponse])
 def search_mentors(career_goal: str = Query(...), db: Session = Depends(get_db)):
@@ -192,6 +224,19 @@ def get_upcoming_sessions(current_user: User = Depends(get_current_user), db: Se
             "seconds_until_start": int((s.scheduled_at - now).total_seconds())
         })
     return res
+# ── Task: Get Single Mentor Profile ────────────────────────────────────────
+
+@router.get("/mentorship/mentors/{mentor_id}", response_model=MentorResponse)
+def get_mentor_detail(mentor_id: UUID, db: Session = Depends(get_db)):
+    mentor = db.query(Mentor).filter(Mentor.id == mentor_id).first()
+    
+    if not mentor:
+        raise HTTPException(status_code=404, detail="Mentor not found.")
+        
+    # We want to make sure the full_name from the User model is accessible
+    # If your MentorResponse schema doesn't include it, you might want to 
+    # return a custom dictionary or update the schema.
+    return mentor
 
 @router.post("/requests/{request_id}/approve")
 async def approve_request(request_id: UUID, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -291,3 +336,44 @@ async def websocket_chat(websocket: WebSocket, session_id: UUID, token: str = Qu
                 })
     except WebSocketDisconnect:
         manager.disconnect(str(session_id), websocket)
+        
+@router.post("/requests/create", status_code=201)
+def request_mentorship(body: RequestIn, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    # 1. Check if slot exists
+    slot = db.query(MentorAvailability).filter(MentorAvailability.id == body.availability_id).first()
+    if not slot or slot.is_booked:
+        raise HTTPException(status_code=400, detail="Slot unavailable.")
+
+    # 2. NEW: Check if someone else already has a pending request for this specific slot
+    existing_request = db.query(MentorshipRequest).filter(
+        MentorshipRequest.availability_id == body.availability_id,
+        MentorshipRequest.status == "pending"
+    ).first()
+    
+    if existing_request:
+        raise HTTPException(
+            status_code=400, 
+            detail="This slot is currently being reviewed for another student. Please pick another time."
+        )
+
+    # 3. Create request
+    new_request = MentorshipRequest(
+        student_id=current_user.id,
+        mentor_id=body.mentor_id,
+        availability_id=body.availability_id,
+        message=body.message,
+        status="pending"
+    )
+    db.add(new_request)
+    db.commit()
+    return {"message": "Request sent to mentor."}
+
+
+@router.get("/availability/{mentor_id}")
+def get_mentor_availability(mentor_id: UUID, db: Session = Depends(get_db)):
+    """NEW: Returns unbooked slots for a specific mentor."""
+    slots = db.query(MentorAvailability).filter(
+        MentorAvailability.mentor_id == mentor_id,
+        MentorAvailability.is_booked == False
+    ).all()
+    return slots

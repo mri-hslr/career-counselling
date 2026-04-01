@@ -1,5 +1,6 @@
 import os
 import logging
+from uuid import UUID
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -12,9 +13,10 @@ from core.database import get_db
 from api.deps import get_current_user
 from models.users import User
 from models.mentorship import MentorFeedback, ParentFeedback
+from models.roadmaps import Roadmap, RoadmapPhase, RoadmapTask
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/v1/career", tags=["Career Roadmap"])
+router = APIRouter(prefix="/api/v1/roadmaps", tags=["Career Roadmap"])
 
 
 # ── Response Schema ───────────────────────────────────────────────────────────
@@ -26,7 +28,7 @@ class WeeklyTask(BaseModel):
     resources: List[str] = Field(description="2-3 free or low-cost resources (official docs, YouTube, freeCodeCamp, etc.)")
 
 
-class RoadmapPhase(BaseModel):
+class RoadmapPhaseIn(BaseModel):
     phase_number: int
     phase_title: str
     description: str
@@ -44,9 +46,38 @@ class CareerRoadmapResponse(BaseModel):
     difficulty_level: str
     total_duration: str
     daily_commitment: str = Field(description="Realistic daily hours derived from student's lifestyle data")
-    phases: List[RoadmapPhase]
+    phases: List[RoadmapPhaseIn]
     mentor_adjustments: str = Field(default="", description="How mentor action items shaped this roadmap")
     parent_adjustments: str = Field(default="", description="How parent observations shaped this roadmap")
+
+
+# ── Persistence Schemas ──────────────────────────────────────────────────────
+
+class TaskResponse(BaseModel):
+    id: UUID
+    sequence: int
+    title: str
+    description: Optional[str]
+    status: str
+    class Config: from_attributes = True
+
+class PhaseResponse(BaseModel):
+    id: UUID
+    sequence: int
+    title: str
+    status: str
+    progress_percentage: float
+    tasks: List[TaskResponse]
+    class Config: from_attributes = True
+
+class RoadmapResponse(BaseModel):
+    id: UUID
+    title: str
+    description: Optional[str]
+    status: str
+    progress_percentage: float
+    phases: List[PhaseResponse]
+    class Config: from_attributes = True
 
 
 # ── Gold Prompt ───────────────────────────────────────────────────────────────
@@ -185,7 +216,6 @@ def _academic_summary(data: Optional[dict]) -> str:
 def _aptitude_summary(data: Optional[dict]) -> str:
     if not isinstance(data, dict):
         return "Not provided"
-    # Handle both raw score dicts and nested structures
     score_keys = [
         ("quantitative", "Quantitative"), ("quantitative_score", "Quantitative"),
         ("logical", "Logical Reasoning"), ("logical_score", "Logical Reasoning"),
@@ -235,9 +265,9 @@ def _financial_context(data: Optional[dict]) -> str:
     return "; ".join(parts) or "Standard"
 
 
-# ── Endpoint ──────────────────────────────────────────────────────────────────
+# ── Generation Endpoint ──────────────────────────────────────────────────────────
 
-@router.get("/roadmap", response_model=CareerRoadmapResponse)
+@router.get("/generate", response_model=CareerRoadmapResponse)
 async def get_career_roadmap(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -246,18 +276,6 @@ async def get_career_roadmap(
         description="Career title override — sent by the frontend from the student's AI recommendation selection.",
     ),
 ):
-    """
-    Generate a fully personalized roadmap for the authenticated student.
-
-    Priority order for career goal:
-      1. `career` query param  (set by frontend after AI recommendation)
-      2. `aspiration_data.dream_career`  (saved from the aspiration assessment)
-      3. Fallback: "Software Engineer"
-
-    Works even if the student hasn't completed every assessment — uses
-    whatever profile data is available and fills gaps gracefully.
-    """
-    # 1. Resolve career goal (frontend param wins, then DB, then fallback)
     career_goal = (
         career
         or (
@@ -269,7 +287,6 @@ async def get_career_roadmap(
         )
         or "Software Engineer"
     )
-    # strip any truthy-but-empty strings from the boolean short-circuit
     if not isinstance(career_goal, str):
         career_goal = "Software Engineer"
 
@@ -281,34 +298,11 @@ async def get_career_roadmap(
             or ""
         )
 
-    # 2. Mentor action items (last 3 sessions for this student)
-    mentor_rows = (
-        db.query(MentorFeedback)
-        .filter(MentorFeedback.student_id == current_user.id)
-        .order_by(MentorFeedback.submitted_at.desc())
-        .limit(3)
-        .all()
-    )
-    mentor_action_items = (
-        "\n".join(f"• {r.action_items}" for r in mentor_rows if r.action_items)
-        or "None"
-    )
+    mentor_rows = db.query(MentorFeedback).filter(MentorFeedback.student_id == current_user.id).order_by(MentorFeedback.submitted_at.desc()).limit(3).all()
+    mentor_action_items = "\n".join(f"• {r.action_items}" for r in mentor_rows if r.action_items) or "None"
 
-    # 3. Parent observations (last 3 entries)
-    parent_rows = (
-        db.query(ParentFeedback)
-        .filter(ParentFeedback.student_id == current_user.id)
-        .order_by(ParentFeedback.logged_at.desc())
-        .limit(3)
-        .all()
-    )
-    parent_observations = (
-        "\n".join(
-            f"• Study habits: {r.study_habits or 'N/A'} | Behavior: {r.behavior_insights or 'N/A'}"
-            for r in parent_rows
-        )
-        or "None"
-    )
+    parent_rows = db.query(ParentFeedback).filter(ParentFeedback.student_id == current_user.id).order_by(ParentFeedback.logged_at.desc()).limit(3).all()
+    parent_observations = "\n".join(f"• Study habits: {r.study_habits or 'N/A'} | Behavior: {r.behavior_insights or 'N/A'}" for r in parent_rows) or "None"
 
     return await generate_roadmap(
         career_goal=career_goal,
@@ -321,3 +315,102 @@ async def get_career_roadmap(
         mentor_action_items=mentor_action_items,
         parent_observations=parent_observations,
     )
+
+
+# ── Persistence Endpoints ────────────────────────────────────────────────────────
+
+@router.post("/save", status_code=201)
+def save_roadmap(body: CareerRoadmapResponse, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    # Remove existing roadmap for this student
+    db.query(Roadmap).filter(Roadmap.student_id == current_user.id).delete()
+    
+    new_roadmap = Roadmap(
+        student_id=current_user.id,
+        title=body.career_title,
+        description=f"Level: {body.student_level} | Duration: {body.total_duration}",
+        status="Overview"
+    )
+    db.add(new_roadmap)
+    db.flush() # Get roadmap ID
+
+    for p_idx, p_data in enumerate(body.phases):
+        phase = RoadmapPhase(
+            roadmap_id=new_roadmap.id,
+            sequence=p_idx + 1,
+            title=p_data.phase_title,
+            status="Not Started"
+        )
+        db.add(phase)
+        db.flush()
+
+        # Add weekly tasks as atomic roadmap tasks
+        for w_idx, w_data in enumerate(p_data.weekly_breakdown):
+            for t_idx, t_text in enumerate(w_data.tasks):
+                task = RoadmapTask(
+                    phase_id=phase.id,
+                    sequence=(w_idx * 10) + t_idx,
+                    title=f"Week {w_data.week_number}: {t_text}",
+                    status="Not Started"
+                )
+                db.add(task)
+    
+    db.commit()
+    return {"message": "Roadmap persisted successfully.", "roadmap_id": new_roadmap.id}
+
+
+@router.post("/start")
+def start_roadmap(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    roadmap = db.query(Roadmap).filter(Roadmap.student_id == current_user.id).first()
+    if not roadmap: raise HTTPException(status_code=404, detail="No roadmap found.")
+    
+    roadmap.status = "Active"
+    # Mark first phase as Active
+    first_phase = db.query(RoadmapPhase).filter(RoadmapPhase.roadmap_id == roadmap.id).order_by(RoadmapPhase.sequence).first()
+    if first_phase:
+        first_phase.status = "Active"
+    
+    db.commit()
+    return {"message": "Journey started!"}
+
+
+@router.get("/current", response_model=RoadmapResponse)
+def get_current_roadmap(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    roadmap = db.query(Roadmap).filter(Roadmap.student_id == current_user.id).first()
+    if not roadmap: raise HTTPException(status_code=404, detail="No active roadmap.")
+    return roadmap
+
+
+@router.patch("/tasks/{task_id}/complete")
+def toggle_task_completion(task_id: UUID, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    task = db.query(RoadmapTask).join(RoadmapPhase).join(Roadmap).filter(
+        RoadmapTask.id == task_id, Roadmap.student_id == current_user.id
+    ).first()
+    
+    if not task: raise HTTPException(status_code=404)
+    
+    # Toggle status
+    task.status = "Completed" if task.status == "Not Started" else "Not Started"
+    db.flush()
+
+    # Update Phase Progress
+    phase = task.phase
+    total_tasks = db.query(RoadmapTask).filter(RoadmapTask.phase_id == phase.id).count()
+    completed_tasks = db.query(RoadmapTask).filter(RoadmapTask.phase_id == phase.id, RoadmapTask.status == "Completed").count()
+    phase.progress_percentage = (completed_tasks / total_tasks) * 100 if total_tasks > 0 else 0
+    
+    if phase.progress_percentage == 100:
+        phase.status = "Completed"
+    elif phase.progress_percentage > 0:
+        phase.status = "Active"
+
+    # Update Roadmap Progress
+    roadmap = phase.roadmap
+    all_phases = db.query(RoadmapPhase).filter(RoadmapPhase.roadmap_id == roadmap.id).all()
+    avg_progress = sum(p.progress_percentage for p in all_phases) / len(all_phases) if all_phases else 0
+    roadmap.progress_percentage = avg_progress
+    
+    if roadmap.progress_percentage == 100:
+        roadmap.status = "Completed"
+
+    db.commit()
+    return {"new_status": task.status, "phase_progress": phase.progress_percentage, "total_progress": roadmap.progress_percentage}

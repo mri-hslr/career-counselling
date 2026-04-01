@@ -2,7 +2,7 @@ import random
 import string
 import logging
 from uuid import UUID
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -17,7 +17,7 @@ from api.v1.roadmap import (
 )
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/v1", tags=["Parent"])
+router = APIRouter(prefix="/api/v1", tags=["Parent-Student Linking"])
 
 
 def _unique_invite_code(db: Session) -> str:
@@ -28,61 +28,83 @@ def _unique_invite_code(db: Session) -> str:
             return code
 
 
-# ── Student: get (or lazily generate) their invite code ─────────────────────
+# ── Task 3.2: Student retrieves their invite code ─────────────────────
 
-@router.get("/profiles/students/invite-code")
-def get_invite_code(
+@router.get("/students/invite-code")
+def get_student_invite_code(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     if current_user.role != UserRole.STUDENT:
-        raise HTTPException(status_code=403, detail="Only students can generate invite codes.")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, 
+            detail="Only students can access their invite code."
+        )
 
     if not current_user.invite_code:
-        current_user.invite_code = _unique_invite_code(db)
-        db.commit()
-        db.refresh(current_user)
+        try:
+            current_user.invite_code = _unique_invite_code(db)
+            db.commit()
+            db.refresh(current_user)
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Error generating invite code: {str(e)}")
+            raise HTTPException(status_code=500, detail="Failed to generate invite code.")
 
     return {"invite_code": current_user.invite_code}
 
 
-# ── Parent: link to a student via invite code ────────────────────────────────
+# ── Task 3.3: Parent links to a student via invite code ─────────────────────
 
-class LinkRequest(BaseModel):
+class LinkStudentRequest(BaseModel):
     invite_code: str
 
 
-@router.post("/profiles/students/link/", status_code=201)
-def link_parent_to_student(
-    body: LinkRequest,
+@router.post("/parents/link-student", status_code=201)
+def link_student_to_parent(
+    body: LinkStudentRequest,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     if current_user.role != UserRole.PARENT:
-        raise HTTPException(status_code=403, detail="Only parents can link to a student.")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, 
+            detail="Only parents can link to a student profile."
+        )
 
+    # 1. Find student by invite code
     student = db.query(User).filter(
         User.invite_code == body.invite_code.upper().strip()
     ).first()
+    
     if not student or student.role != UserRole.STUDENT:
-        raise HTTPException(status_code=404, detail="Invalid invite code.")
+        raise HTTPException(status_code=404, detail="Invalid invite code. No student found.")
 
+    # 2. Check for existing link
     already_linked = db.query(ParentStudentLink).filter(
         ParentStudentLink.parent_id == current_user.id,
         ParentStudentLink.student_id == student.id,
     ).first()
+    
     if already_linked:
-        raise HTTPException(status_code=409, detail="Already linked to this student.")
+        return {"message": "Already linked to this student.", "student_id": str(student.id)}
 
-    db.add(ParentStudentLink(parent_id=current_user.id, student_id=student.id))
-    db.commit()
-    return {"message": "Successfully linked to student.", "student_id": str(student.id)}
+    # 3. Create link
+    try:
+        new_link = ParentStudentLink(parent_id=current_user.id, student_id=student.id)
+        db.add(new_link)
+        db.commit()
+        return {"message": "Successfully linked to student.", "student_id": str(student.id)}
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error linking parent to student: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to create link.")
 
 
 # ── Parent: read student's roadmap (auth-gated) ──────────────────────────────
 
-@router.get("/roadmaps/{student_id}", response_model=CareerRoadmapResponse)
-async def get_student_roadmap(
+@router.get("/parent/roadmaps/{student_id}", response_model=CareerRoadmapResponse)
+async def get_linked_student_roadmap(
     student_id: UUID,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -157,7 +179,7 @@ class ParentFeedbackIn(BaseModel):
     behavior_insights: str = ""
 
 
-@router.post("/mentorship/feedback/parent/", status_code=201)
+@router.post("/parent/feedback", status_code=201)
 def submit_parent_feedback(
     body: ParentFeedbackIn,
     current_user: User = Depends(get_current_user),
@@ -181,3 +203,27 @@ def submit_parent_feedback(
     ))
     db.commit()
     return {"message": "Feedback submitted successfully."}
+
+@router.get("/parents/linked-student")
+def get_linked_student_status(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if current_user.role != UserRole.PARENT:
+        raise HTTPException(status_code=403, detail="Only parents can check linked students.")
+        
+    link = db.query(ParentStudentLink).filter(ParentStudentLink.parent_id == current_user.id).first()
+    
+    if not link:
+        return {"is_linked": False, "student": None}
+        
+    student = db.query(User).filter(User.id == link.student_id).first()
+    
+    if not student:
+        return {"is_linked": False, "student": None}
+        
+    return {
+        "is_linked": True,
+        "student": {
+            "id": str(student.id),
+            "full_name": student.full_name or "Student",
+            "email": student.email
+        }
+    }

@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from datetime import timedelta
+from api.deps import get_current_user
 
 from core.database import get_db
 from core.security import get_password_hash, verify_password, create_access_token, ACCESS_TOKEN_EXPIRE_MINUTES
@@ -60,3 +61,32 @@ def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db:
     )
     
     return {"access_token": access_token, "token_type": "bearer"}
+
+@router.get("/users/me")
+def get_user_progress_and_data(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """
+    Returns the current user's profile completion status safely.
+    """
+    user = db.query(User).filter(User.id == current_user.id).first()
+    
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+        
+    # We use getattr() with a default of {} to NEVER crash, 
+    # even if models/users.py is missing the column definition!
+    academic = getattr(user, 'academic_data', {}) or {}
+    aptitude = getattr(user, 'apti_data', {}) or {}
+    personality = getattr(user, 'personality_data', {}) or {}
+    
+    # If they filled out their academic data, their basic profile is done!
+    return {
+        "user_id": user.id,
+        "email": user.email,
+        "full_name": user.full_name,
+        "role": user.role,
+        "progress": {
+            "profile_done": len(academic) > 0, 
+            "aptitude_done": len(aptitude) > 0,
+            "personality_done": len(personality) > 0
+        }
+    }

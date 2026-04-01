@@ -23,13 +23,15 @@ app = FastAPI(
 )
 
 # CORS configuration for React frontend
-# CORS configuration for React frontend
+origins = ["*"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],      # The magic wildcard: Allows ANY IP on your LAN
-    allow_credentials=False,  # MUST be False when using "*" to keep browsers happy
-    allow_methods=["*"],      # Allows GET, POST, PUT, DELETE, etc.
-    allow_headers=["*"],      # Allows all headers (like our JWT Authorization header)
+    allow_origins=origins,
+    # 2. IMPORTANT: If allow_origins is ["*"], allow_credentials MUST be False
+    allow_credentials=True, 
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Register all routes
