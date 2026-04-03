@@ -3,11 +3,21 @@ import random
 import re
 import psycopg2
 from psycopg2.extras import RealDictCursor
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends # Added Depends
+from pydantic import BaseModel
+from uuid import UUID
+from sqlalchemy.orm import Session       # Added Session
+from core.database import get_db         # Added get_db
+from models.users import User            # Added User model
 
 router = APIRouter(prefix="/api/v1/assessments", tags=["Career Engine"])
 DATABASE_URL = os.getenv("DATABASE_URL")
 
+class AssessmentSubmission(BaseModel):
+    userId: UUID
+    moduleKey: str
+    payload: dict  # This will contain the 'scores' object from frontend
+    
 # --- CLEAN UTILS ---
 def extract_qa(text: str):
     """Parses raw document text into clean question, options, answer, and explanation."""
@@ -42,31 +52,28 @@ def extract_qa(text: str):
     except:
         return "Parsing Error", ["A) N/A", "B) N/A", "C) N/A", "D) N/A"], "A", "N/A"
 
-# --- REWIRED ROUTE ---
+# --- ROUTES ---
 
 @router.get("/aptitude/generate/assessment-pool")
 async def get_assessment_pool(target_grade: str):
-    """
-    Fetches exactly 45 questions:
-    - 15 questions per category (Logical, Quant, Verbal)
-    - Within each: 5 Easy, 5 Medium, 5 Hard
-    """
     categories = ["Logical Reasoning", "Quantitative Aptitude", "Verbal Ability"]
     difficulties = ["Easy", "Medium", "Hard"]
     
+   # Use LIKE to match "8" inside "6-8"
     query = """
     SELECT document, cmetadata->>'category' as cat, cmetadata->>'difficulty' as diff 
     FROM langchain_pg_embedding 
-    WHERE cmetadata->>'target_grade' = %s
+    WHERE cmetadata->>'target_grade' LIKE %s
     """
     
     try:
         with psycopg2.connect(DATABASE_URL) as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute(query, (target_grade,))
+                # Wrap the grade in wildcards: e.g., "%8%"
+                cur.execute(query, (f"%{target_grade}%",))
                 rows = cur.fetchall()
+                print(f"DEBUG: Found {len(rows)} rows for grade {target_grade}")
 
-        # Group fetched questions by Category and Difficulty
         raw_pool = {cat: {diff: [] for diff in difficulties} for cat in categories}
         
         for r in rows:
@@ -81,13 +88,10 @@ async def get_assessment_pool(target_grade: str):
                     "category": cat,
                     "difficulty": diff
                 })
-
-        # Build the final balanced pool
         final_balanced_pool = []
         for cat in categories:
             for diff in difficulties:
                 available = raw_pool[cat][diff]
-                # Sample exactly 5, or all if less than 5 available
                 sampled = random.sample(available, min(len(available), 5))
                 final_balanced_pool.extend(sampled)
 
@@ -98,4 +102,17 @@ async def get_assessment_pool(target_grade: str):
 
     except Exception as e:
         print(f"Pool Generation Error: {e}")
-        raise HTTPException(status_code=500, detail="Failed to generate balanced question pool.")
+        raise HTTPException(status_code=500, detail="Failed to generate question pool.")
+    
+@router.post("/submit")
+async def submit_assessment(data: AssessmentSubmission, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.id == data.userId).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if data.moduleKey == 'aptitude':
+        user.apti_data = data.payload.get('scores')
+    
+    db.commit()
+    db.refresh(user) # Refresh to get the updated state
+    return {"message": "Assessment saved successfully", "scores": user.apti_data}

@@ -140,7 +140,9 @@ def _build_llm(api_key: str, base_url: str, model: str) -> ChatOpenAI:
         model=model,
         openai_api_key=api_key,
         openai_api_base=base_url,
-        temperature=0.3,
+        temperature=0.2,
+        max_tokens=6000,
+        model_kwargs={"top_p": 0.9}
     )
 
 
@@ -155,12 +157,12 @@ async def generate_roadmap(
     mentor_action_items: str = "None",
     parent_observations: str = "None",
 ) -> CareerRoadmapResponse:
-    """Try Groq first, fall back to DeepSeek on failure."""
     parser = PydanticOutputParser(pydantic_object=CareerRoadmapResponse)
     prompt = ChatPromptTemplate.from_messages([
         ("system", _GOLD_SYSTEM_PROMPT),
         ("human", "Generate the personalized roadmap for career goal: {career_goal}"),
     ])
+    
     invoke_args = {
         "career_goal": career_goal,
         "vision": vision or career_goal,
@@ -174,26 +176,32 @@ async def generate_roadmap(
         "format_instructions": parser.get_format_instructions(),
     }
 
-    groq_key = os.getenv("GROQ_API_KEY")
-    if groq_key:
-        try:
-            chain = prompt | _build_llm(groq_key, "https://api.groq.com/openai/v1", "llama-3.3-70b-versatile") | parser
-            return await chain.ainvoke(invoke_args)
-        except Exception as e:
-            logger.warning(f"Groq failed, switching to DeepSeek: {e}")
-
+    # USE DEEPSEEK ONLY
     deepseek_key = os.getenv("DEEPSEEK_API_KEY")
-    if deepseek_key:
-        try:
-            chain = prompt | _build_llm(deepseek_key, "https://api.deepseek.com", "deepseek-chat") | parser
-            return await chain.ainvoke(invoke_args)
-        except Exception as e:
-            logger.error(f"DeepSeek also failed: {e}")
+    if not deepseek_key:
+        raise HTTPException(
+            status_code=500,
+            detail="DeepSeek API key is missing. Check your environment variables."
+        )
 
-    raise HTTPException(
-        status_code=500,
-        detail="Roadmap generation failed: both Groq and DeepSeek are unavailable.",
-    )
+    try:
+        # Standardized helper call for DeepSeek
+        llm = _build_llm(deepseek_key, "https://api.deepseek.com", "deepseek-chat")
+        chain = prompt | llm | parser
+        
+        response = await chain.ainvoke(invoke_args)
+        
+        if not response:
+            raise ValueError("AI returned an empty response")
+            
+        return response
+
+    except Exception as e:
+        logger.error(f"DeepSeek Generation failed: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Roadmap generation failed: {str(e)}"
+        )
 
 
 # ── Context Extractors ────────────────────────────────────────────────────────

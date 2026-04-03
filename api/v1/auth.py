@@ -72,13 +72,10 @@ def get_user_progress_and_data(current_user: User = Depends(get_current_user), d
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
         
-    # We use getattr() with a default of {} to NEVER crash, 
-    # even if models/users.py is missing the column definition!
     academic = getattr(user, 'academic_data', {}) or {}
     aptitude = getattr(user, 'apti_data', {}) or {}
     personality = getattr(user, 'personality_data', {}) or {}
     
-    # If they filled out their academic data, their basic profile is done!
     return {
         "user_id": user.id,
         "email": user.email,
@@ -88,5 +85,8 @@ def get_user_progress_and_data(current_user: User = Depends(get_current_user), d
             "profile_done": len(academic) > 0, 
             "aptitude_done": len(aptitude) > 0,
             "personality_done": len(personality) > 0
-        }
+        },
+        "apti_data": aptitude,            # <--- ADD THIS
+        "personality_data": personality,  # <--- ADD THIS 
+        "academic_data": academic         # <--- ADD THIS
     }

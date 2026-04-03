@@ -6,7 +6,9 @@ from sqlalchemy.orm import Session
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import PydanticOutputParser
-
+from sqlalchemy import select
+from models.careers import Career, StudentInsight
+from schemas.ai import CareerSelectRequest, CareerSelectResponse, SelectedCareerResponse
 from core.database import get_db
 from api.deps import get_current_user
 from models.users import User
@@ -81,3 +83,59 @@ async def generate_career_roadmap(
         # Log the error for debugging
         print(f"AI Engine Error: {str(e)}")
         raise HTTPException(status_code=500, detail="The AI Career Engine failed to generate a response.")
+    
+@router.post("/select-career", response_model=CareerSelectResponse)
+async def select_career(
+    payload: CareerSelectRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    # 1. Find or Create the Career record
+    career = db.query(Career).filter(Career.title == payload.career_title).first()
+    
+    if not career:
+        career = Career(
+            title=payload.career_title,
+            description=f"AI recommended path for {payload.career_title}",
+            base_success_probability=0.7 # Default baseline
+        )
+        db.add(career)
+        db.flush() # Get the ID without committing yet
+
+    # 2. Upsert into StudentInsight
+    insight = db.query(StudentInsight).filter(StudentInsight.student_id == current_user.id).first()
+    
+    if insight:
+        insight.recommended_career_id = career.id
+        insight.generated_at = func.now()
+    else:
+        insight = StudentInsight(
+            student_id=current_user.id,
+            recommended_career_id=career.id
+        )
+        db.add(insight)
+
+    try:
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to persist selection.")
+
+    return {"success": True, "career": career.title}
+
+@router.get("/selected-career", response_model=SelectedCareerResponse)
+async def get_selected_career(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    insight = db.query(StudentInsight).filter(StudentInsight.student_id == current_user.id).first()
+    
+    if not insight or not insight.recommended_career_id:
+        return {"career_title": None, "career_id": None}
+    
+    career = db.query(Career).filter(Career.id == insight.recommended_career_id).first()
+    
+    return {
+        "career_title": career.title if career else None,
+        "career_id": career.id if career else None
+    }
