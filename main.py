@@ -23,13 +23,13 @@ app = FastAPI(
 )
 
 # CORS configuration for React frontend
-origins = ["*"]
-
+# allow_origins=["*"] is incompatible with allow_credentials=True — browsers
+# reject that combination. JWT is sent via Authorization header (not a cookie),
+# so credentials=False is correct and sufficient.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
-    # 2. IMPORTANT: If allow_origins is ["*"], allow_credentials MUST be False
-    allow_credentials=True, 
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
